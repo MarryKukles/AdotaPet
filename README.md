@@ -37,20 +37,6 @@ npm run dev
 
 Abra a URL exibida pelo Vite.
 
-## Firebase
-
-Para usar Firebase de verdade:
-
-1. Crie um projeto no Firebase.
-2. Ative Authentication > Email/Password.
-3. Crie um Firestore Database.
-4. Crie um Storage.
-5. Copie `.env.example` para `.env`.
-6. Preencha as variáveis com a configuração do seu app Web Firebase.
-7. Rode novamente `npm run dev`.
-
-Sem Firebase configurado, o projeto entra automaticamente em **modo demonstração**, usando localStorage. Isso permite apresentar as telas e fluxos mesmo sem backend.
-
 ## Usuários de demonstração
 
 Você pode criar qualquer conta pela tela de cadastro.
