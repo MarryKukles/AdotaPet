@@ -1,68 +1,191 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { configured, auth } from "./firebase";
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
+
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+
+import { auth, db } from "./firebase";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("adotapet_user")); } catch { return null; }
-  });
-  const [loading, setLoading] = useState(configured);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!configured) return;
-    return onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser ? {
-        id: firebaseUser.uid,
-        email: firebaseUser.email,
-        name: firebaseUser.displayName || firebaseUser.email?.split("@")[0],
-        role: localStorage.getItem("adotapet_role") || "adopter"
-      } : null);
-      setLoading(false);
-    });
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (firebaseUser) => {
+        if (!firebaseUser) {
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+
+        try {
+          const userRef = doc(db, "users", firebaseUser.uid);
+          const userSnapshot = await getDoc(userRef);
+
+          if (userSnapshot.exists()) {
+            const profile = userSnapshot.data();
+
+            setUser({
+              id: firebaseUser.uid,
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              name: profile.name || "",
+              phone: profile.phone || "",
+              role: profile.role || "adopter",
+            });
+          } else {
+            setUser({
+              id: firebaseUser.uid,
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              name:
+                firebaseUser.displayName ||
+                firebaseUser.email?.split("@")[0] ||
+                "",
+              phone: "",
+              role: "adopter",
+            });
+          }
+        } catch (error) {
+          console.error(
+            "Erro ao carregar perfil do usuário:",
+            error
+          );
+
+          setUser(null);
+        } finally {
+          setLoading(false);
+        }
+      }
+    );
+
+    return unsubscribe;
   }, []);
 
-  const login = async (email, password) => {
-    if (configured) {
-      const result = await signInWithEmailAndPassword(auth, email, password);
-      const next = { id: result.user.uid, email: result.user.email, name: result.user.email.split("@")[0], role: localStorage.getItem("adotapet_role") || "adopter" };
-      setUser(next);
-      return next;
-    }
-    const users = JSON.parse(localStorage.getItem("adotapet_users") || "[]");
-    const found = users.find((u) => u.email === email && u.password === password);
-    if (!found) throw new Error("E-mail ou senha inválidos.");
-    setUser(found);
-    localStorage.setItem("adotapet_user", JSON.stringify(found));
-    return found;
-  };
+  async function login(email, password) {
+    const result = await signInWithEmailAndPassword(
+      auth,
+      email,
+      password
+    );
 
-  const register = async ({ name, email, password, role }) => {
-    if (configured) {
-      const result = await createUserWithEmailAndPassword(auth, email, password);
-      localStorage.setItem("adotapet_role", role);
-      const next = { id: result.user.uid, email, name, role };
-      setUser(next);
-      return next;
-    }
-    const users = JSON.parse(localStorage.getItem("adotapet_users") || "[]");
-    if (users.some((u) => u.email === email)) throw new Error("Este e-mail já está cadastrado.");
-    const next = { id: crypto.randomUUID(), name, email, password, role };
-    users.push(next);
-    localStorage.setItem("adotapet_users", JSON.stringify(users));
-    localStorage.setItem("adotapet_user", JSON.stringify(next));
-    setUser(next);
-    return next;
-  };
+    const firebaseUser = result.user;
 
-  const logout = async () => {
-    if (configured) await signOut(auth);
-    localStorage.removeItem("adotapet_user");
+    const userRef = doc(db, "users", firebaseUser.uid);
+    const userSnapshot = await getDoc(userRef);
+
+    if (!userSnapshot.exists()) {
+      throw new Error(
+        "Perfil do usuário não encontrado no Firestore."
+      );
+    }
+
+    const profile = userSnapshot.data();
+
+    const nextUser = {
+      id: firebaseUser.uid,
+      uid: firebaseUser.uid,
+      email: firebaseUser.email,
+      name: profile.name || "",
+      phone: profile.phone || "",
+      role: profile.role || "adopter",
+    };
+
+    setUser(nextUser);
+
+    return nextUser;
+  }
+
+  async function register({
+    name,
+    email,
+    password,
+    phone,
+    role,
+  }) {
+    const result =
+      await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+
+    const firebaseUser = result.user;
+
+    const userProfile = {
+      name: name?.trim() || "",
+      email: email.trim().toLowerCase(),
+      phone: phone?.trim() || "",
+      role: role || "adopter",
+      createdAt: serverTimestamp(),
+    };
+
+    await setDoc(
+      doc(db, "users", firebaseUser.uid),
+      userProfile
+    );
+
+    const nextUser = {
+      id: firebaseUser.uid,
+      uid: firebaseUser.uid,
+      email: firebaseUser.email,
+      name: userProfile.name,
+      phone: userProfile.phone,
+      role: userProfile.role,
+    };
+
+    setUser(nextUser);
+
+    return nextUser;
+  }
+
+  async function logout() {
+    await signOut(auth);
     setUser(null);
-  };
+  }
 
-  return <AuthContext.Provider value={{ user, loading, login, register, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        login,
+        register,
+        logout,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
-export const useAuth = () => useContext(AuthContext);
+export function useAuth() {
+  const context = useContext(AuthContext);
+
+  if (!context) {
+    throw new Error(
+      "useAuth deve ser usado dentro de AuthProvider."
+    );
+  }
+
+  return context;
+}

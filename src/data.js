@@ -1,3 +1,23 @@
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from "firebase/firestore";
+
+import { db } from "./firebase";
+
+/* =========================================================
+   DADOS INICIAIS
+   ========================================================= */
+
 export const initialPets = [
   {
     id: "thor",
@@ -108,64 +128,547 @@ export const initialPets = [
   },
 ];
 
-export const seedIfNeeded = () => {
-  if (!localStorage.getItem("adotapet_pets")) {
-    localStorage.setItem(
-      "adotapet_pets",
-      JSON.stringify(initialPets)
+/* =========================================================
+   ANIMAIS
+   ========================================================= */
+
+export async function getPets() {
+  const snapshot = await getDocs(
+    collection(db, "pets")
+  );
+
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+  }));
+}
+
+export async function getAvailablePets() {
+  const snapshot = await getDocs(
+    query(
+      collection(db, "pets"),
+      where("status", "==", "Disponível")
+    )
+  );
+
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+  }));
+}
+
+export async function getPetById(petId) {
+  const snapshot = await getDoc(
+    doc(db, "pets", petId)
+  );
+
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return {
+    id: snapshot.id,
+    ...snapshot.data(),
+  };
+}
+
+export async function getPetsByProtector(
+  protectorId
+) {
+  const snapshot = await getDocs(
+    query(
+      collection(db, "pets"),
+      where(
+        "protectorId",
+        "==",
+        protectorId
+      )
+    )
+  );
+
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+  }));
+}
+
+export async function createPet(
+  pet,
+  protectorId
+) {
+  if (!protectorId) {
+    throw new Error(
+      "Não foi possível identificar o protetor."
     );
   }
 
-  if (!localStorage.getItem("adotapet_requests")) {
-    localStorage.setItem(
-      "adotapet_requests",
-      JSON.stringify([])
+  const petId =
+    pet.id || crypto.randomUUID();
+
+  const data = {
+    name: pet.name?.trim() || "",
+    species: pet.species || "",
+    breed: pet.breed || "SRD",
+    sex: pet.sex || "",
+    age: Number(pet.age) || 0,
+    size: pet.size || "",
+    city: pet.city?.trim() || "",
+    vaccinated: Boolean(
+      pet.vaccinated
+    ),
+    neutered: Boolean(
+      pet.neutered
+    ),
+    description:
+      pet.description?.trim() || "",
+    image: pet.image?.trim() || "",
+    status:
+      pet.status || "Disponível",
+    protectorId,
+    createdAt: serverTimestamp(),
+  };
+
+  await setDoc(
+    doc(db, "pets", petId),
+    data
+  );
+
+  return {
+    id: petId,
+    ...data,
+  };
+}
+
+export async function deletePet(
+  petId
+) {
+  await deleteDoc(
+    doc(db, "pets", petId)
+  );
+}
+
+/* =========================================================
+   SOLICITAÇÕES DE ADOÇÃO
+   ========================================================= */
+
+export async function getRequestsByUser(
+  userId
+) {
+  if (!userId) {
+    return [];
+  }
+
+  const snapshot = await getDocs(
+    query(
+      collection(
+        db,
+        "adoptionRequests"
+      ),
+      where(
+        "userId",
+        "==",
+        userId
+      )
+    )
+  );
+
+  return snapshot.docs.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  );
+}
+
+export async function getRequestsByPet(
+  petId
+) {
+  const snapshot = await getDocs(
+    query(
+      collection(
+        db,
+        "adoptionRequests"
+      ),
+      where(
+        "petId",
+        "==",
+        petId
+      )
+    )
+  );
+
+  return snapshot.docs.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  );
+}
+
+export async function getRequestsByProtector(
+  petIds = []
+) {
+  const uniquePetIds = [
+    ...new Set(
+      petIds.filter(Boolean)
+    ),
+  ];
+
+  if (!uniquePetIds.length) {
+    return [];
+  }
+
+  const results =
+    await Promise.all(
+      uniquePetIds.map(
+        (petId) =>
+          getRequestsByPet(
+            petId
+          )
+      )
+    );
+
+  return results
+    .flat()
+    .sort((a, b) => {
+      const aTime =
+        a.createdAt?.toMillis?.() ||
+        0;
+
+      const bTime =
+        b.createdAt?.toMillis?.() ||
+        0;
+
+      return bTime - aTime;
+    });
+}
+
+export async function createAdoptionRequest({
+  petId,
+  userId,
+  message,
+}) {
+  if (!petId) {
+    throw new Error(
+      "Animal não informado."
     );
   }
 
-  if (!localStorage.getItem("adotapet_favorites")) {
-    localStorage.setItem(
-      "adotapet_favorites",
-      JSON.stringify([])
+  if (!userId) {
+    throw new Error(
+      "Usuário não informado."
     );
   }
-};
 
-export const getPets = () => {
-  return JSON.parse(
-    localStorage.getItem("adotapet_pets") || "[]"
-  );
-};
+  const pet =
+    await getPetById(petId);
 
-export const savePets = (pets) => {
-  localStorage.setItem(
-    "adotapet_pets",
-    JSON.stringify(pets)
-  );
-};
+  if (!pet) {
+    throw new Error(
+      "Animal não encontrado."
+    );
+  }
 
-export const getRequests = () => {
-  return JSON.parse(
-    localStorage.getItem("adotapet_requests") || "[]"
-  );
-};
+  if (
+    pet.status !==
+    "Disponível"
+  ) {
+    throw new Error(
+      "Este animal não está mais disponível para adoção."
+    );
+  }
 
-export const saveRequests = (items) => {
-  localStorage.setItem(
-    "adotapet_requests",
-    JSON.stringify(items)
-  );
-};
+  const existing =
+    await getRequestsByUser(
+      userId
+    );
 
-export const getFavorites = () => {
-  return JSON.parse(
-    localStorage.getItem("adotapet_favorites") || "[]"
-  );
-};
+  const hasPendingRequest =
+    existing.some(
+      (item) =>
+        item.petId === petId &&
+        item.status ===
+          "Pendente"
+    );
 
-export const saveFavorites = (items) => {
-  localStorage.setItem(
-    "adotapet_favorites",
-    JSON.stringify(items)
+  if (hasPendingRequest) {
+    throw new Error(
+      "Você já possui uma solicitação pendente para este animal."
+    );
+  }
+
+  const requestId =
+    crypto.randomUUID();
+
+  const data = {
+    petId,
+    userId,
+    message:
+      message?.trim() || "",
+    status: "Pendente",
+    createdAt:
+      serverTimestamp(),
+  };
+
+  await setDoc(
+    doc(
+      db,
+      "adoptionRequests",
+      requestId
+    ),
+    data
   );
-};
+
+  return {
+    id: requestId,
+    ...data,
+  };
+}
+
+export async function updateRequest(
+  requestId,
+  changes
+) {
+  await updateDoc(
+    doc(
+      db,
+      "adoptionRequests",
+      requestId
+    ),
+    {
+      ...changes,
+      updatedAt:
+        serverTimestamp(),
+    }
+  );
+}
+
+/* =========================================================
+   APROVAR ADOÇÃO
+   ========================================================= */
+
+export async function approveAdoptionRequest(
+  requestId
+) {
+  const requestSnapshot =
+    await getDoc(
+      doc(
+        db,
+        "adoptionRequests",
+        requestId
+      )
+    );
+
+  if (
+    !requestSnapshot.exists()
+  ) {
+    throw new Error(
+      "Solicitação não encontrada."
+    );
+  }
+
+  const request =
+    requestSnapshot.data();
+
+  const petSnapshot =
+    await getDoc(
+      doc(
+        db,
+        "pets",
+        request.petId
+      )
+    );
+
+  if (
+    !petSnapshot.exists()
+  ) {
+    throw new Error(
+      "Animal não encontrado."
+    );
+  }
+
+  const pet =
+    petSnapshot.data();
+
+  if (
+    pet.status !==
+    "Disponível"
+  ) {
+    throw new Error(
+      "Este animal não está mais disponível."
+    );
+  }
+
+  const requests =
+    await getRequestsByPet(
+      request.petId
+    );
+
+  const batch =
+    writeBatch(db);
+
+  /* Animal passa para adotado */
+  batch.update(
+    doc(
+      db,
+      "pets",
+      request.petId
+    ),
+    {
+      status: "Adotado",
+      updatedAt:
+        serverTimestamp(),
+    }
+  );
+
+  /* Atualiza as solicitações */
+  requests.forEach(
+    (item) => {
+      if (
+        item.id ===
+        requestId
+      ) {
+        batch.update(
+          doc(
+            db,
+            "adoptionRequests",
+            item.id
+          ),
+          {
+            status:
+              "Aprovada",
+            updatedAt:
+              serverTimestamp(),
+          }
+        );
+      } else if (
+        item.status ===
+        "Pendente"
+      ) {
+        batch.update(
+          doc(
+            db,
+            "adoptionRequests",
+            item.id
+          ),
+          {
+            status:
+              "Recusada",
+            reason:
+              "O animal foi adotado por outro solicitante.",
+            updatedAt:
+              serverTimestamp(),
+          }
+        );
+      }
+    }
+  );
+
+  await batch.commit();
+}
+
+/* =========================================================
+   FAVORITOS
+   ========================================================= */
+
+export async function getFavorites(
+  userId
+) {
+  if (!userId) {
+    return [];
+  }
+
+  const snapshot = await getDocs(
+    query(
+      collection(
+        db,
+        "favorites"
+      ),
+      where(
+        "userId",
+        "==",
+        userId
+      )
+    )
+  );
+
+  return snapshot.docs.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  );
+}
+
+export async function toggleFavorite(
+  userId,
+  petId
+) {
+  if (!userId || !petId) {
+    throw new Error(
+      "Usuário ou animal não informado."
+    );
+  }
+
+  const favoriteId =
+    `${userId}_${petId}`;
+
+  const reference = doc(
+    db,
+    "favorites",
+    favoriteId
+  );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (snapshot.exists()) {
+    await deleteDoc(
+      reference
+    );
+
+    return false;
+  }
+
+  await setDoc(
+    reference,
+    {
+      userId,
+      petId,
+      createdAt:
+        serverTimestamp(),
+    }
+  );
+
+  return true;
+}
+
+/* =========================================================
+   PERFIL DO USUÁRIO
+   ========================================================= */
+
+export async function getUserProfile(
+  userId
+) {
+  if (!userId) {
+    return null;
+  }
+
+  const snapshot =
+    await getDoc(
+      doc(
+        db,
+        "users",
+        userId
+      )
+    );
+
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return {
+    id: snapshot.id,
+    ...snapshot.data(),
+  };
+}
