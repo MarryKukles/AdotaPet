@@ -46,7 +46,6 @@ import {
   approveAdoptionRequest,
   getFavorites,
   toggleFavorite,
-  getUserProfile,
 } from "./data";
 
 function App() {
@@ -575,9 +574,12 @@ function Dashboard() {
       setPets(ownPets);
       const ownRequests = await getRequestsByProtector(ownPets.map((pet) => pet.id));
       setRequests(ownRequests);
-      const uniqueUserIds = [...new Set(ownRequests.map((request) => request.userId).filter(Boolean))];
-      const profiles = await Promise.all(uniqueUserIds.map(async (id) => [id, await getUserProfile(id)]));
-      setRequesters(Object.fromEntries(profiles));
+      const storedProfiles = Object.fromEntries(ownRequests.map((request) => [request.userId, {
+        name: request.requesterName || "",
+        email: request.requesterEmail || "",
+        phone: request.requesterPhone || "",
+      }]));
+      setRequesters(storedProfiles);
     } catch (error) {
       console.error("Erro ao carregar painel:", error);
       alert(error.message || "Não foi possível carregar o painel.");
@@ -692,11 +694,11 @@ function Dashboard() {
           <div className="panel-head"><h2><ClipboardCheck size={20} /> Solicitações de adoção</h2></div>
           {!requests.length ? <Empty title="Nenhuma solicitação" text="Quando alguém solicitar uma adoção, ela aparecerá aqui." /> : <div className="request-list">
             {requests.map((request) => {
-              const requester = requesters[request.userId];
+              const requester = requesters[request.userId] || {};
               const pet = pets.find((item) => item.id === request.petId);
-              const name = requester?.name || request.userName || "Usuário";
-              const email = requester?.email || request.userEmail || "Não informado";
-              const phone = requester?.phone || request.userPhone || "Não informado";
+              const name = request.requesterName || requester.name || request.userName || "Usuário";
+              const email = request.requesterEmail || requester.email || request.userEmail || "Não informado";
+              const phone = request.requesterPhone || requester.phone || request.userPhone || "Não informado";
               const petName = pet?.name || request.petName || "Animal";
               const date = request.createdAt?.toDate ? request.createdAt.toDate().toLocaleDateString("pt-BR") : (request.date || "Data não informada");
               return <div className="request-item" key={request.id}>
