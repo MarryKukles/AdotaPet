@@ -172,17 +172,11 @@ export async function getPetById(petId) {
   };
 }
 
-export async function getPetsByProtector(
-  protectorId
-) {
+export async function getPetsByProtector(protectorId) {
   const snapshot = await getDocs(
     query(
       collection(db, "pets"),
-      where(
-        "protectorId",
-        "==",
-        protectorId
-      )
+      where("protectorId", "==", protectorId)
     )
   );
 
@@ -192,10 +186,7 @@ export async function getPetsByProtector(
   }));
 }
 
-export async function createPet(
-  pet,
-  protectorId
-) {
+export async function createPet(pet, protectorId) {
   if (!protectorId) {
     throw new Error(
       "Não foi possível identificar o protetor."
@@ -213,12 +204,8 @@ export async function createPet(
     age: Number(pet.age) || 0,
     size: pet.size || "",
     city: pet.city?.trim() || "",
-    vaccinated: Boolean(
-      pet.vaccinated
-    ),
-    neutered: Boolean(
-      pet.neutered
-    ),
+    vaccinated: Boolean(pet.vaccinated),
+    neutered: Boolean(pet.neutered),
     description:
       pet.description?.trim() || "",
     image: pet.image?.trim() || "",
@@ -239,9 +226,7 @@ export async function createPet(
   };
 }
 
-export async function deletePet(
-  petId
-) {
+export async function deletePet(petId) {
   await deleteDoc(
     doc(db, "pets", petId)
   );
@@ -251,9 +236,7 @@ export async function deletePet(
    SOLICITAÇÕES DE ADOÇÃO
    ========================================================= */
 
-export async function getRequestsByUser(
-  userId
-) {
+export async function getRequestsByUser(userId) {
   if (!userId) {
     return [];
   }
@@ -280,9 +263,7 @@ export async function getRequestsByUser(
   );
 }
 
-export async function getRequestsByPet(
-  petId
-) {
+export async function getRequestsByPet(petId) {
   const snapshot = await getDocs(
     query(
       collection(
@@ -343,6 +324,10 @@ export async function getRequestsByProtector(
     });
 }
 
+/* =========================================================
+   CRIAR SOLICITAÇÃO DE ADOÇÃO
+   ========================================================= */
+
 export async function createAdoptionRequest({
   petId,
   userId,
@@ -378,6 +363,26 @@ export async function createAdoptionRequest({
     );
   }
 
+  /*
+    Busca os dados do usuário que
+    está fazendo a solicitação.
+  */
+  const profile =
+    await getUserProfile(
+      userId
+    );
+
+  if (!profile) {
+    throw new Error(
+      "Não foi possível carregar os dados do usuário."
+    );
+  }
+
+  /*
+    Verifica se o usuário já possui
+    uma solicitação pendente para
+    este mesmo animal.
+  */
   const existing =
     await getRequestsByUser(
       userId
@@ -386,7 +391,8 @@ export async function createAdoptionRequest({
   const hasPendingRequest =
     existing.some(
       (item) =>
-        item.petId === petId &&
+        item.petId ===
+          petId &&
         item.status ===
           "Pendente"
     );
@@ -400,12 +406,33 @@ export async function createAdoptionRequest({
   const requestId =
     crypto.randomUUID();
 
+  /*
+    Além do userId, salvamos os dados
+    do solicitante na própria solicitação.
+
+    Isso permite que a ONG veja:
+    - nome
+    - e-mail
+    - telefone
+  */
   const data = {
     petId,
     userId,
+
+    requesterName:
+      profile.name || "",
+
+    requesterEmail:
+      profile.email || "",
+
+    requesterPhone:
+      profile.phone || "",
+
     message:
       message?.trim() || "",
+
     status: "Pendente",
+
     createdAt:
       serverTimestamp(),
   };
@@ -424,6 +451,10 @@ export async function createAdoptionRequest({
     ...data,
   };
 }
+
+/* =========================================================
+   ATUALIZAR SOLICITAÇÃO
+   ========================================================= */
 
 export async function updateRequest(
   requestId,
@@ -507,7 +538,10 @@ export async function approveAdoptionRequest(
   const batch =
     writeBatch(db);
 
-  /* Animal passa para adotado */
+  /*
+    O animal passa para
+    status "Adotado".
+  */
   batch.update(
     doc(
       db,
@@ -521,7 +555,14 @@ export async function approveAdoptionRequest(
     }
   );
 
-  /* Atualiza as solicitações */
+  /*
+    A solicitação aprovada recebe
+    "Aprovada".
+
+    As outras solicitações
+    pendentes do mesmo animal
+    recebem "Recusada".
+  */
   requests.forEach(
     (item) => {
       if (
@@ -571,9 +612,7 @@ export async function approveAdoptionRequest(
    FAVORITOS
    ========================================================= */
 
-export async function getFavorites(
-  userId
-) {
+export async function getFavorites(userId) {
   if (!userId) {
     return [];
   }
