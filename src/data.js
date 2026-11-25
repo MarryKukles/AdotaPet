@@ -1,3 +1,4 @@
+
 import {
   collection,
   deleteDoc,
@@ -13,6 +14,29 @@ import {
 } from "firebase/firestore";
 
 import { db } from "./firebase";
+
+// Cache curto em memória para evitar consultas repetidas ao Firestore
+// durante a navegação e entre componentes da mesma listagem.
+const CACHE_TTL = 30_000;
+let availablePetsCache = null;
+let availablePetsPromise = null;
+const favoritesCache = new Map();
+const favoritesPromises = new Map();
+
+function clearAvailablePetsCache() {
+  availablePetsCache = null;
+  availablePetsPromise = null;
+}
+
+function clearFavoritesCache(userId) {
+  if (userId) {
+    favoritesCache.delete(userId);
+    favoritesPromises.delete(userId);
+  } else {
+    favoritesCache.clear();
+    favoritesPromises.clear();
+  }
+}
 
 /* =========================================================
    DADOS INICIAIS
@@ -36,7 +60,6 @@ export const initialPets = [
       "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=900&q=85",
     status: "Disponível",
   },
-
   {
     id: "luna",
     name: "Luna",
@@ -54,7 +77,6 @@ export const initialPets = [
       "https://images.unsplash.com/photo-1518791841217-8f162f1e1131?auto=format&fit=crop&w=900&q=85",
     status: "Disponível",
   },
-
   {
     id: "mel",
     name: "Mel",
@@ -72,7 +94,6 @@ export const initialPets = [
       "https://images.unsplash.com/photo-1558788353-f76d92427f16?auto=format&fit=crop&w=900&q=85",
     status: "Disponível",
   },
-
   {
     id: "simba",
     name: "Simba",
@@ -90,7 +111,6 @@ export const initialPets = [
       "https://images.unsplash.com/photo-1574158622682-e40e69881006?auto=format&fit=crop&w=900&q=85",
     status: "Disponível",
   },
-
   {
     id: "nina",
     name: "Nina",
@@ -108,7 +128,6 @@ export const initialPets = [
       "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?auto=format&fit=crop&w=900&q=85",
     status: "Disponível",
   },
-
   {
     id: "bento",
     name: "Bento",
@@ -133,9 +152,7 @@ export const initialPets = [
    ========================================================= */
 
 export async function getPets() {
-  const snapshot = await getDocs(
-    collection(db, "pets")
-  );
+  const snapshot = await getDocs(collection(db, "pets"));
 
   return snapshot.docs.map((item) => ({
     id: item.id,
@@ -143,24 +160,48 @@ export async function getPets() {
   }));
 }
 
-export async function getAvailablePets() {
-  const snapshot = await getDocs(
+export async function getAvailablePets({ forceRefresh = false } = {}) {
+  if (
+    !forceRefresh &&
+    availablePetsCache &&
+    availablePetsCache.expiresAt > Date.now()
+  ) {
+    return availablePetsCache.data;
+  }
+
+  // Reaproveita a mesma requisição quando vários componentes pedem os dados juntos.
+  if (!forceRefresh && availablePetsPromise) {
+    return availablePetsPromise;
+  }
+
+  availablePetsPromise = getDocs(
     query(
       collection(db, "pets"),
       where("status", "==", "Disponível")
     )
-  );
+  )
+    .then((snapshot) => {
+      const pets = snapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
 
-  return snapshot.docs.map((item) => ({
-    id: item.id,
-    ...item.data(),
-  }));
+      availablePetsCache = {
+        data: pets,
+        expiresAt: Date.now() + CACHE_TTL,
+      };
+
+      return pets;
+    })
+    .finally(() => {
+      availablePetsPromise = null;
+    });
+
+  return availablePetsPromise;
 }
 
 export async function getPetById(petId) {
-  const snapshot = await getDoc(
-    doc(db, "pets", petId)
-  );
+  const snapshot = await getDoc(doc(db, "pets", petId));
 
   if (!snapshot.exists()) {
     return null;
@@ -188,13 +229,10 @@ export async function getPetsByProtector(protectorId) {
 
 export async function createPet(pet, protectorId) {
   if (!protectorId) {
-    throw new Error(
-      "Não foi possível identificar o protetor."
-    );
+    throw new Error("Não foi possível identificar o protetor.");
   }
 
-  const petId =
-    pet.id || crypto.randomUUID();
+  const petId = pet.id || crypto.randomUUID();
 
   const data = {
     name: pet.name?.trim() || "",
@@ -206,19 +244,15 @@ export async function createPet(pet, protectorId) {
     city: pet.city?.trim() || "",
     vaccinated: Boolean(pet.vaccinated),
     neutered: Boolean(pet.neutered),
-    description:
-      pet.description?.trim() || "",
+    description: pet.description?.trim() || "",
     image: pet.image?.trim() || "",
-    status:
-      pet.status || "Disponível",
+    status: pet.status || "Disponível",
     protectorId,
     createdAt: serverTimestamp(),
   };
 
-  await setDoc(
-    doc(db, "pets", petId),
-    data
-  );
+  await setDoc(doc(db, "pets", petId), data);
+  clearAvailablePetsCache();
 
   return {
     id: petId,
@@ -227,9 +261,8 @@ export async function createPet(pet, protectorId) {
 }
 
 export async function deletePet(petId) {
-  await deleteDoc(
-    doc(db, "pets", petId)
-  );
+  await deleteDoc(doc(db, "pets", petId));
+  clearAvailablePetsCache();
 }
 
 /* =========================================================
@@ -243,82 +276,49 @@ export async function getRequestsByUser(userId) {
 
   const snapshot = await getDocs(
     query(
-      collection(
-        db,
-        "adoptionRequests"
-      ),
-      where(
-        "userId",
-        "==",
-        userId
-      )
+      collection(db, "adoptionRequests"),
+      where("userId", "==", userId)
     )
   );
 
-  return snapshot.docs.map(
-    (item) => ({
-      id: item.id,
-      ...item.data(),
-    })
-  );
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+  }));
 }
 
 export async function getRequestsByPet(petId) {
   const snapshot = await getDocs(
     query(
-      collection(
-        db,
-        "adoptionRequests"
-      ),
-      where(
-        "petId",
-        "==",
-        petId
-      )
+      collection(db, "adoptionRequests"),
+      where("petId", "==", petId)
     )
   );
 
-  return snapshot.docs.map(
-    (item) => ({
-      id: item.id,
-      ...item.data(),
-    })
-  );
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data(),
+  }));
 }
 
-export async function getRequestsByProtector(
-  petIds = []
-) {
+export async function getRequestsByProtector(petIds = []) {
   const uniquePetIds = [
-    ...new Set(
-      petIds.filter(Boolean)
-    ),
+    ...new Set(petIds.filter(Boolean)),
   ];
 
   if (!uniquePetIds.length) {
     return [];
   }
 
-  const results =
-    await Promise.all(
-      uniquePetIds.map(
-        (petId) =>
-          getRequestsByPet(
-            petId
-          )
-      )
-    );
+  const results = await Promise.all(
+    uniquePetIds.map((petId) => getRequestsByPet(petId))
+  );
 
   return results
     .flat()
     .sort((a, b) => {
-      const aTime =
-        a.createdAt?.toMillis?.() ||
-        0;
-
-      const bTime =
-        b.createdAt?.toMillis?.() ||
-        0;
+      const aTime = a.createdAt?.toMillis?.() || 0;
+      const bTime = b.createdAt?.toMillis?.() || 0;
 
       return bTime - aTime;
     });
@@ -334,43 +334,26 @@ export async function createAdoptionRequest({
   message,
 }) {
   if (!petId) {
-    throw new Error(
-      "Animal não informado."
-    );
+    throw new Error("Animal não informado.");
   }
 
   if (!userId) {
-    throw new Error(
-      "Usuário não informado."
-    );
+    throw new Error("Usuário não informado.");
   }
 
-  const pet =
-    await getPetById(petId);
+  const pet = await getPetById(petId);
 
   if (!pet) {
-    throw new Error(
-      "Animal não encontrado."
-    );
+    throw new Error("Animal não encontrado.");
   }
 
-  if (
-    pet.status !==
-    "Disponível"
-  ) {
+  if (pet.status !== "Disponível") {
     throw new Error(
       "Este animal não está mais disponível para adoção."
     );
   }
 
-  /*
-    Busca os dados do usuário que
-    está fazendo a solicitação.
-  */
-  const profile =
-    await getUserProfile(
-      userId
-    );
+  const profile = await getUserProfile(userId);
 
   if (!profile) {
     throw new Error(
@@ -378,24 +361,13 @@ export async function createAdoptionRequest({
     );
   }
 
-  /*
-    Verifica se o usuário já possui
-    uma solicitação pendente para
-    este mesmo animal.
-  */
-  const existing =
-    await getRequestsByUser(
-      userId
-    );
+  const existing = await getRequestsByUser(userId);
 
-  const hasPendingRequest =
-    existing.some(
-      (item) =>
-        item.petId ===
-          petId &&
-        item.status ===
-          "Pendente"
-    );
+  const hasPendingRequest = existing.some(
+    (item) =>
+      item.petId === petId &&
+      item.status === "Pendente"
+  );
 
   if (hasPendingRequest) {
     throw new Error(
@@ -403,46 +375,21 @@ export async function createAdoptionRequest({
     );
   }
 
-  const requestId =
-    crypto.randomUUID();
+  const requestId = crypto.randomUUID();
 
-  /*
-    Além do userId, salvamos os dados
-    do solicitante na própria solicitação.
-
-    Isso permite que a ONG veja:
-    - nome
-    - e-mail
-    - telefone
-  */
   const data = {
     petId,
     userId,
-
-    requesterName:
-      profile.name || "",
-
-    requesterEmail:
-      profile.email || "",
-
-    requesterPhone:
-      profile.phone || "",
-
-    message:
-      message?.trim() || "",
-
+    requesterName: profile.name || "",
+    requesterEmail: profile.email || "",
+    requesterPhone: profile.phone || "",
+    message: message?.trim() || "",
     status: "Pendente",
-
-    createdAt:
-      serverTimestamp(),
+    createdAt: serverTimestamp(),
   };
 
   await setDoc(
-    doc(
-      db,
-      "adoptionRequests",
-      requestId
-    ),
+    doc(db, "adoptionRequests", requestId),
     data
   );
 
@@ -456,20 +403,12 @@ export async function createAdoptionRequest({
    ATUALIZAR SOLICITAÇÃO
    ========================================================= */
 
-export async function updateRequest(
-  requestId,
-  changes
-) {
+export async function updateRequest(requestId, changes) {
   await updateDoc(
-    doc(
-      db,
-      "adoptionRequests",
-      requestId
-    ),
+    doc(db, "adoptionRequests", requestId),
     {
       ...changes,
-      updatedAt:
-        serverTimestamp(),
+      updatedAt: serverTimestamp(),
     }
   );
 }
@@ -478,194 +417,132 @@ export async function updateRequest(
    APROVAR ADOÇÃO
    ========================================================= */
 
-export async function approveAdoptionRequest(
-  requestId
-) {
-  const requestSnapshot =
-    await getDoc(
-      doc(
-        db,
-        "adoptionRequests",
-        requestId
-      )
-    );
+export async function approveAdoptionRequest(requestId) {
+  const requestSnapshot = await getDoc(
+    doc(db, "adoptionRequests", requestId)
+  );
 
-  if (
-    !requestSnapshot.exists()
-  ) {
-    throw new Error(
-      "Solicitação não encontrada."
-    );
+  if (!requestSnapshot.exists()) {
+    throw new Error("Solicitação não encontrada.");
   }
 
-  const request =
-    requestSnapshot.data();
+  const request = requestSnapshot.data();
 
-  const petSnapshot =
-    await getDoc(
-      doc(
-        db,
-        "pets",
-        request.petId
-      )
-    );
+  const petSnapshot = await getDoc(
+    doc(db, "pets", request.petId)
+  );
 
-  if (
-    !petSnapshot.exists()
-  ) {
-    throw new Error(
-      "Animal não encontrado."
-    );
+  if (!petSnapshot.exists()) {
+    throw new Error("Animal não encontrado.");
   }
 
-  const pet =
-    petSnapshot.data();
+  const pet = petSnapshot.data();
 
-  if (
-    pet.status !==
-    "Disponível"
-  ) {
-    throw new Error(
-      "Este animal não está mais disponível."
-    );
+  if (pet.status !== "Disponível") {
+    throw new Error("Este animal não está mais disponível.");
   }
 
-  const requests =
-    await getRequestsByPet(
-      request.petId
-    );
+  const requests = await getRequestsByPet(request.petId);
+  const batch = writeBatch(db);
 
-  const batch =
-    writeBatch(db);
-
-  /*
-    O animal passa para
-    status "Adotado".
-  */
   batch.update(
-    doc(
-      db,
-      "pets",
-      request.petId
-    ),
+    doc(db, "pets", request.petId),
     {
       status: "Adotado",
-      updatedAt:
-        serverTimestamp(),
+      updatedAt: serverTimestamp(),
     }
   );
 
-  /*
-    A solicitação aprovada recebe
-    "Aprovada".
-
-    As outras solicitações
-    pendentes do mesmo animal
-    recebem "Recusada".
-  */
-  requests.forEach(
-    (item) => {
-      if (
-        item.id ===
-        requestId
-      ) {
-        batch.update(
-          doc(
-            db,
-            "adoptionRequests",
-            item.id
-          ),
-          {
-            status:
-              "Aprovada",
-            updatedAt:
-              serverTimestamp(),
-          }
-        );
-      } else if (
-        item.status ===
-        "Pendente"
-      ) {
-        batch.update(
-          doc(
-            db,
-            "adoptionRequests",
-            item.id
-          ),
-          {
-            status:
-              "Recusada",
-            reason:
-              "O animal foi adotado por outro solicitante.",
-            updatedAt:
-              serverTimestamp(),
-          }
-        );
-      }
+  requests.forEach((item) => {
+    if (item.id === requestId) {
+      batch.update(
+        doc(db, "adoptionRequests", item.id),
+        {
+          status: "Aprovada",
+          updatedAt: serverTimestamp(),
+        }
+      );
+    } else if (item.status === "Pendente") {
+      batch.update(
+        doc(db, "adoptionRequests", item.id),
+        {
+          status: "Recusada",
+          reason: "O animal foi adotado por outro solicitante.",
+          updatedAt: serverTimestamp(),
+        }
+      );
     }
-  );
+  });
 
   await batch.commit();
+  clearAvailablePetsCache();
 }
 
 /* =========================================================
    FAVORITOS
    ========================================================= */
 
-export async function getFavorites(userId) {
+export async function getFavorites(userId, { forceRefresh = false } = {}) {
   if (!userId) {
     return [];
   }
 
-  const snapshot = await getDocs(
-    query(
-      collection(
-        db,
-        "favorites"
-      ),
-      where(
-        "userId",
-        "==",
-        userId
-      )
-    )
-  );
+  const cached = favoritesCache.get(userId);
 
-  return snapshot.docs.map(
-    (item) => ({
-      id: item.id,
-      ...item.data(),
-    })
-  );
-}
-
-export async function toggleFavorite(
-  userId,
-  petId
-) {
-  if (!userId || !petId) {
-    throw new Error(
-      "Usuário ou animal não informado."
-    );
+  if (
+    !forceRefresh &&
+    cached &&
+    cached.expiresAt > Date.now()
+  ) {
+    return cached.data;
   }
 
-  const favoriteId =
-    `${userId}_${petId}`;
+  // Os cards compartilham uma única leitura, em vez de consultar o Firestore individualmente.
+  if (!forceRefresh && favoritesPromises.has(userId)) {
+    return favoritesPromises.get(userId);
+  }
 
-  const reference = doc(
-    db,
-    "favorites",
-    favoriteId
-  );
+  const request = getDocs(
+    query(
+      collection(db, "favorites"),
+      where("userId", "==", userId)
+    )
+  )
+    .then((snapshot) => {
+      const favorites = snapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
 
-  const snapshot =
-    await getDoc(reference);
+      favoritesCache.set(userId, {
+        data: favorites,
+        expiresAt: Date.now() + CACHE_TTL,
+      });
+
+      return favorites;
+    })
+    .finally(() => {
+      favoritesPromises.delete(userId);
+    });
+
+  favoritesPromises.set(userId, request);
+
+  return request;
+}
+
+export async function toggleFavorite(userId, petId) {
+  if (!userId || !petId) {
+    throw new Error("Usuário ou animal não informado.");
+  }
+
+  const favoriteId = `${userId}_${petId}`;
+
+  const reference = doc(db, "favorites", favoriteId);
+  const snapshot = await getDoc(reference);
 
   if (snapshot.exists()) {
-    await deleteDoc(
-      reference
-    );
-
+    await deleteDoc(reference);
+    clearFavoritesCache(userId);
     return false;
   }
 
@@ -674,10 +551,11 @@ export async function toggleFavorite(
     {
       userId,
       petId,
-      createdAt:
-        serverTimestamp(),
+      createdAt: serverTimestamp(),
     }
   );
+
+  clearFavoritesCache(userId);
 
   return true;
 }
@@ -686,21 +564,14 @@ export async function toggleFavorite(
    PERFIL DO USUÁRIO
    ========================================================= */
 
-export async function getUserProfile(
-  userId
-) {
+export async function getUserProfile(userId) {
   if (!userId) {
     return null;
   }
 
-  const snapshot =
-    await getDoc(
-      doc(
-        db,
-        "users",
-        userId
-      )
-    );
+  const snapshot = await getDoc(
+    doc(db, "users", userId)
+  );
 
   if (!snapshot.exists()) {
     return null;
